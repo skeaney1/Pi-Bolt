@@ -493,6 +493,7 @@ export class InteractiveMode {
 	private isInitialized = false;
 	private onInputCallback?: (text: string) => void;
 	private pendingUserInputs: string[] = [];
+	private pendingSubmission: Container | undefined;
 	private activeStatusIndicator: StatusIndicator | undefined = undefined;
 	private activeWorkingIndicatorEmbedded = false;
 	private readonly idleStatus = new IdleStatus();
@@ -1328,13 +1329,33 @@ export class InteractiveMode {
 		// Main interactive loop
 		while (true) {
 			const userInput = await this.getUserInput();
+			// A submitted draft is not yet an accepted transcript entry: input handlers may
+			// consume or transform it. Show it while those handlers and preflight run.
+			if (!userInput.startsWith("/")) {
+				this.pendingSubmission = new Container();
+				this.pendingSubmission.addChild(
+					new ThemedText(() => theme.fg("dim", "Submitting… (preview)"), this.outputPad, 0),
+				);
+				this.pendingSubmission.addChild(new TruncatedText(userInput, this.outputPad, 0));
+				this.pendingMessagesContainer.addChild(this.pendingSubmission);
+				this.ui.requestRender();
+			}
 			try {
 				await this.session.prompt(userInput);
 			} catch (error: unknown) {
 				const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
 				this.showError(errorMessage);
+			} finally {
+				this.clearPendingSubmission();
 			}
 		}
+	}
+
+	private clearPendingSubmission(): void {
+		if (!this.pendingSubmission) return;
+		this.pendingMessagesContainer.removeChild(this.pendingSubmission);
+		this.pendingSubmission = undefined;
+		this.ui.requestRender();
 	}
 
 	private async checkForPackageUpdates(): Promise<string[]> {
@@ -2294,6 +2315,7 @@ export class InteractiveMode {
 	}
 
 	private renderCurrentSessionState(): void {
+		this.clearPendingSubmission();
 		this.loadedResourcesContainer.clear();
 		this.chatContainer.clear();
 		this.pendingMessagesContainer.clear();
@@ -3156,6 +3178,7 @@ export class InteractiveMode {
 		// Set up handlers on defaultEditor - they use this.editor for text access
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
+			this.clearPendingSubmission();
 			if (this.session.isStreaming) {
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			} else if (this.session.isBashRunning) {
@@ -3597,6 +3620,7 @@ export class InteractiveMode {
 					this.addMessageToChat(event.message);
 					this.ui.requestRender();
 				} else if (event.message.role === "user") {
+					this.clearPendingSubmission();
 					this.addMessageToChat(event.message);
 					this.updatePendingMessagesDisplay();
 					this.ui.requestRender();
@@ -3757,6 +3781,7 @@ export class InteractiveMode {
 			}
 
 			case "agent_end":
+				this.clearPendingSubmission();
 				if (this.settingsManager.getShowTerminalProgress()) {
 					this.ui.terminal.setProgress(false);
 				}
